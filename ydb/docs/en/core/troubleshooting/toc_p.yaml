@@ -4,3 +4,5 @@ items:
   include:
     mode: link
     path: performance/toc_p.yaml
+- name: Diagnistic examples
+  href: examples/overloaded-shard.md
