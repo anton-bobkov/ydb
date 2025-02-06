@@ -4,6 +4,7 @@
 #include <ydb/core/tx/columnshard/columnshard_impl.h>
 #include <ydb/core/tx/columnshard/engines/column_engine_logs.h>
 #include <ydb/core/tx/columnshard/transactions/locks_db.h>
+#include <ydb/core/tx/tiering/manager.h>
 
 namespace NKikimr::NColumnShard::NLoading {
 
@@ -194,7 +195,8 @@ bool TSpecialValuesInitializer::DoPrecharge(NTabletFlatExecutor::TTransactionCon
 
 bool TTablesManagerInitializer::DoExecute(NTabletFlatExecutor::TTransactionContext& txc, const TActorContext& /*ctx*/) {
     NIceDb::TNiceDb db(txc.DB);
-    TTablesManager tablesManagerLocal(Self->StoragesManager, Self->DataAccessorsManager.GetObjectPtrVerified(), Self->TabletID());
+    TTablesManager tablesManagerLocal(Self->StoragesManager, Self->DataAccessorsManager.GetObjectPtrVerified(),
+        NOlap::TSchemaCachesManager::GetCache(Self->OwnerPathId), Self->TabletID());
     {
         TMemoryProfileGuard g("TTxInit/TTablesManager");
         if (!tablesManagerLocal.InitFromDB(db)) {
@@ -203,7 +205,7 @@ bool TTablesManagerInitializer::DoExecute(NTabletFlatExecutor::TTransactionConte
     }
     Self->Counters.GetTabletCounters()->SetCounter(COUNTER_TABLES, tablesManagerLocal.GetTables().size());
     Self->Counters.GetTabletCounters()->SetCounter(COUNTER_TABLE_PRESETS, tablesManagerLocal.GetSchemaPresets().size());
-    Self->Counters.GetTabletCounters()->SetCounter(COUNTER_TABLE_TTLS, tablesManagerLocal.GetTtl().PathsCount());
+    Self->Counters.GetTabletCounters()->SetCounter(COUNTER_TABLE_TTLS, tablesManagerLocal.GetTtl().size());
 
     Self->TablesManager = std::move(tablesManagerLocal);
     return true;
@@ -225,6 +227,34 @@ bool TTablesManagerInitializer::DoPrecharge(NTabletFlatExecutor::TTransactionCon
            (int)Schema::Precharge<Schema::TableVersionInfo>(db, txc.DB.GetScheme()) &
            (int)Schema::Precharge<Schema::TtlSettingsPresetInfo>(db, txc.DB.GetScheme()) &
            (int)Schema::Precharge<Schema::TtlSettingsPresetVersionInfo>(db, txc.DB.GetScheme());
+}
+
+bool TTiersManagerInitializer::DoExecute(NTabletFlatExecutor::TTransactionContext& txc, const TActorContext& /*ctx*/) {
+    NIceDb::TNiceDb db(txc.DB);
+    auto rowset = db.Table<Schema::TableVersionInfo>().Select();
+    if (!rowset.IsReady()) {
+        return false;
+    }
+
+    while (!rowset.EndOfSet()) {
+        NKikimrTxColumnShard::TTableVersionInfo versionInfo;
+        AFL_VERIFY(versionInfo.ParseFromString(rowset.GetValue<Schema::TableVersionInfo::InfoProto>()));
+        if (versionInfo.GetTtlSettings().HasEnabled()) {
+            NOlap::TTiering tiering;
+            tiering.DeserializeFromProto(versionInfo.GetTtlSettings().GetEnabled()).Validate();
+            Self->Tiers->ActivateTiers(tiering.GetUsedTiers());
+        }
+
+        if (!rowset.Next()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool TTiersManagerInitializer::DoPrecharge(NTabletFlatExecutor::TTransactionContext& txc, const TActorContext& /*ctx*/) {
+    NIceDb::TNiceDb db(txc.DB);
+    return Schema::Precharge<Schema::TableVersionInfo>(db, txc.DB.GetScheme());
 }
 
 }   // namespace NKikimr::NColumnShard::NLoading

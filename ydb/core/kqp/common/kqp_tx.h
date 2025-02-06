@@ -235,6 +235,7 @@ public:
         HasOlapTable = false;
         HasOltpTable = false;
         HasTableWrite = false;
+        HasTableRead = false;
         NeedUncommittedChangesFlush = false;
     }
 
@@ -264,14 +265,22 @@ public:
                 Readonly = true;
                 break;
 
+            case Ydb::Table::TransactionSettings::kSnapshotReadWrite:
+                EffectiveIsolationLevel = NKikimrKqp::ISOLATION_LEVEL_SNAPSHOT_RW;
+                Readonly = false;
+                break;
+
             case Ydb::Table::TransactionSettings::TX_MODE_NOT_SET:
                 YQL_ENSURE(false, "tx_mode not set, settings: " << settings);
                 break;
         };
     }
 
-    bool ShouldExecuteDeferredEffects() const {
+    bool ShouldExecuteDeferredEffects(const TKqpPhyTxHolder::TConstPtr& tx) const {
         if (NeedUncommittedChangesFlush || HasOlapTable) {
+            return !DeferredEffects.Empty();
+        }
+        if (EffectiveIsolationLevel == NKikimrKqp::ISOLATION_LEVEL_SNAPSHOT_RW && !tx && HasTableRead) {
             return !DeferredEffects.Empty();
         }
 
@@ -343,6 +352,7 @@ public:
     bool HasOlapTable = false;
     bool HasOltpTable = false;
     bool HasTableWrite = false;
+    bool HasTableRead = false;
 
     bool NeedUncommittedChangesFlush = false;
     THashSet<NKikimr::TTableId> ModifiedTablesSinceLastFlush;
@@ -507,9 +517,7 @@ bool NeedSnapshot(const TKqpTransactionContext& txCtx, const NYql::TKikimrConfig
     bool commitTx, const NKqpProto::TKqpPhyQuery& physicalQuery);
 
 bool HasOlapTableReadInTx(const NKqpProto::TKqpPhyQuery& physicalQuery);
-bool HasOlapTableWriteInStage(
-    const NKqpProto::TKqpPhyStage& stage,
-    const google::protobuf::RepeatedPtrField< ::NKqpProto::TKqpPhyTable>& tables);
+bool HasOlapTableWriteInStage(const NKqpProto::TKqpPhyStage& stage);
 bool HasOlapTableWriteInTx(const NKqpProto::TKqpPhyQuery& physicalQuery);
 bool HasOltpTableReadInTx(const NKqpProto::TKqpPhyQuery& physicalQuery);
 bool HasOltpTableWriteInTx(const NKqpProto::TKqpPhyQuery& physicalQuery);

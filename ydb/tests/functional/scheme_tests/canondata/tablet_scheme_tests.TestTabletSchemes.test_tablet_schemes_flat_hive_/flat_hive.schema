@@ -8,6 +8,11 @@
         ],
         "ColumnsAdded": [
             {
+                "ColumnId": 7,
+                "ColumnName": "ScaleRecommenderPolicies",
+                "ColumnType": "String"
+            },
+            {
                 "ColumnId": 1,
                 "ColumnName": "SchemeshardId",
                 "ColumnType": "Uint64"
@@ -42,6 +47,7 @@
         "ColumnFamilies": {
             "0": {
                 "Columns": [
+                    7,
                     1,
                     2,
                     3,
@@ -696,6 +702,11 @@
                 "ColumnId": 11,
                 "ColumnName": "BecomeUpOnRestart",
                 "ColumnType": "Bool"
+            },
+            {
+                "ColumnId": 12,
+                "ColumnName": "DrainSeqNo",
+                "ColumnType": "Uint64"
             }
         ],
         "ColumnsDropped": [],
@@ -712,7 +723,8 @@
                     8,
                     9,
                     10,
-                    11
+                    11,
+                    12
                 ],
                 "RoomID": 0,
                 "Codec": 0,

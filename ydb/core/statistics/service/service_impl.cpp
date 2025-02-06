@@ -26,8 +26,8 @@
 
 #include <util/datetime/cputimer.h>
 
-#include <ydb/library/yql/public/issue/yql_issue_message.h>
-#include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
+#include <yql/essentials/public/issue/yql_issue_message.h>
+#include <ydb-cpp-sdk/client/proto/accessor.h>
 #include <ydb/core/grpc_services/local_rpc/local_rpc.h>
 
 namespace NKikimr {
@@ -746,6 +746,7 @@ private:
         entry.Operation = TNavigate::EOp::OpPath;
         entry.RequestType = TNavigate::TEntry::ERequestType::ByTableId;
         entry.RedirectRequired = redirectRequired;
+        entry.ShowPrivatePath = true;
     }
 
     void Handle(TEvStatistics::TEvGetStatistics::TPtr& ev) {
@@ -1046,13 +1047,13 @@ private:
             columnTags->Add(tag);
         }
 
-        const auto round = AggregationStatistics.Round;
-        NTabletPipe::SendData(SelfId(), clientId, request.release(), round);
-        Schedule(Settings.StatisticsRequestTimeout, new TEvPrivate::TEvStatisticsRequestTimeout(round, tabletId));
-
         SA_LOG_D("TEvStatisticsRequest send"
             << ", client id = " << clientId
             << ", path = " << *path);
+
+        const auto round = AggregationStatistics.Round;
+        NTabletPipe::SendData(SelfId(), clientId, request.release(), round);
+        Schedule(Settings.StatisticsRequestTimeout, new TEvPrivate::TEvStatisticsRequestTimeout(round, tabletId));
     }
 
     void OnTabletError(ui64 tabletId) {

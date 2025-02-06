@@ -42,13 +42,13 @@
 #include <ydb/core/cms/console/immediate_controls_configurator.h>
 #include <ydb/core/cms/console/jaeger_tracing_configurator.h>
 #include <ydb/core/cms/console/log_settings_configurator.h>
-#include <ydb/core/cms/console/shared_cache_configurator.h>
 #include <ydb/core/cms/console/validators/core_validators.h>
 #include <ydb/core/cms/http.h>
 
 #include <ydb/core/control/immediate_control_board_actor.h>
 
 #include <ydb/core/driver_lib/version/version.h>
+#include <ydb/core/discovery/discovery.h>
 
 #include <ydb/core/grpc_services/grpc_mon.h>
 #include <ydb/core/grpc_services/grpc_request_proxy.h>
@@ -175,8 +175,8 @@
 
 #include <ydb/library/yql/providers/s3/actors/yql_s3_actors_factory_impl.h>
 
-#include <ydb/library/yql/minikql/comp_nodes/mkql_factories.h>
-#include <ydb/library/yql/parser/pg_wrapper/interface/comp_factory.h>
+#include <yql/essentials/minikql/comp_nodes/mkql_factories.h>
+#include <yql/essentials/parser/pg_wrapper/interface/comp_factory.h>
 #include <ydb/library/yql/utils/actor_log/log.h>
 
 #include <ydb/services/metadata/ds_table/service.h>
@@ -666,11 +666,8 @@ void TBasicServicesInitializer::InitializeServices(NActors::TActorSystemSetup* s
                     } else if (data.SessionConnected) {
                         record.SetSessionState(NKikimrWhiteboard::TNodeStateInfo::CONNECTED);
                     }
+                    record.SetSameScope(data.SameScope);
                     data.ActorSystem->Send(whiteboardId, update.release());
-                    if (data.ReportClockSkew) {
-                        data.ActorSystem->Send(whiteboardId, new NNodeWhiteboard::TEvWhiteboard::TEvClockSkewUpdate(
-                            data.PeerNodeId, data.ClockSkewUs));
-                    }
                 };
             }
 
@@ -859,6 +856,7 @@ void TBasicServicesInitializer::InitializeServices(NActors::TActorSystemSetup* s
                         mon->RegisterActorPage(actorsMonPage, "wilson_uploader", "Wilson Trace Uploader", false, actorSystem, actorId);
                     };
                 }
+                uploaderParams.Counters = GetServiceCounters(counters, "utils");
 
                 wilsonUploader.reset(std::move(uploaderParams).CreateUploader());
                 break;
@@ -945,6 +943,9 @@ void TBSNodeWardenInitializer::InitializeServices(NActors::TActorSystemSetup* se
     }
     if (Config.HasDomainsConfig()) {
         nodeWardenConfig->DomainsConfig.emplace(Config.GetDomainsConfig());
+    }
+    if (Config.HasSelfManagementConfig()) {
+        nodeWardenConfig->SelfManagementConfig.emplace(Config.GetSelfManagementConfig());
     }
 
     ObtainTenantKey(&nodeWardenConfig->TenantKey, Config.GetKeyConfig());
@@ -1092,38 +1093,17 @@ TSharedCacheInitializer::TSharedCacheInitializer(const TKikimrRunConfig& runConf
 void TSharedCacheInitializer::InitializeServices(
         NActors::TActorSystemSetup* setup,
         const NKikimr::TAppData* appData) {
-    auto config = MakeHolder<TSharedPageCacheConfig>();
-
-    NKikimrSharedCache::TSharedCacheConfig cfg;
+    NKikimrSharedCache::TSharedCacheConfig config;
     if (Config.HasBootstrapConfig() && Config.GetBootstrapConfig().HasSharedCacheConfig()) {
-        cfg.MergeFrom(Config.GetBootstrapConfig().GetSharedCacheConfig());
+        config.MergeFrom(Config.GetBootstrapConfig().GetSharedCacheConfig());
     }
     if (Config.HasSharedCacheConfig()) {
-        cfg.MergeFrom(Config.GetSharedCacheConfig());
+        config.MergeFrom(Config.GetSharedCacheConfig());
     }
 
-    if (cfg.HasMemoryLimit() && cfg.GetMemoryLimit() != 0) {
-        // config limit is optional
-        // if preserved apply both memory controller limit and config limit
-        config->LimitBytes = cfg.GetMemoryLimit();
-    } else {
-        config->LimitBytes = {};
-    }
-    config->TotalAsyncQueueInFlyLimit = cfg.GetAsyncQueueInFlyLimit();
-    config->TotalScanQueueInFlyLimit = cfg.GetScanQueueInFlyLimit();
-    config->ReplacementPolicy = cfg.GetReplacementPolicy();
-    config->ActivePagesReservationPercent = cfg.GetActivePagesReservationPercent();
-
-    TIntrusivePtr<::NMonitoring::TDynamicCounters> tabletGroup = GetServiceCounters(appData->Counters, "tablets");
-    TIntrusivePtr<::NMonitoring::TDynamicCounters> sausageGroup = tabletGroup->GetSubgroup("type", "S_CACHE");
-    config->Counters = new TSharedPageCacheCounters(sausageGroup);
-
-    setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(MakeSharedPageCacheId(0),
-        TActorSetupCmd(CreateSharedPageCache(std::move(config)), TMailboxType::ReadAsFilled, appData->UserPoolId)));
-
-    auto *configurator = NConsole::CreateSharedCacheConfigurator();
-    setup->LocalServices.emplace_back(TActorId(),
-                                      TActorSetupCmd(configurator, TMailboxType::HTSwap, appData->UserPoolId));
+    auto* actor = NSharedCache::CreateSharedPageCache(config, appData->Counters);
+    setup->LocalServices.emplace_back(NSharedCache::MakeSharedPageCacheId(0),
+        TActorSetupCmd(actor, TMailboxType::ReadAsFilled, appData->UserPoolId));
 }
 
 // TBlobCacheInitializer
@@ -1655,11 +1635,10 @@ void TGRpcServicesInitializer::InitializeServices(NActors::TActorSystemSetup* se
 
     if (!IsServiceInitialized(setup, NGRpcService::CreateGRpcRequestProxyId(0))) {
         const size_t proxyCount = Config.HasGRpcConfig() ? Config.GetGRpcConfig().GetGRpcProxyCount() : 1UL;
-        NJaegerTracing::TSamplingThrottlingConfigurator tracingConfigurator(appData->TimeProvider, appData->RandomProvider);
         for (size_t i = 0; i < proxyCount; ++i) {
             auto grpcReqProxy = Config.HasGRpcConfig() && Config.GetGRpcConfig().GetSkipSchemeCheck()
                 ? NGRpcService::CreateGRpcRequestProxySimple(Config)
-                : NGRpcService::CreateGRpcRequestProxy(Config, tracingConfigurator.GetControl());
+                : NGRpcService::CreateGRpcRequestProxy(Config);
             setup->LocalServices.push_back(std::pair<TActorId,
                                            TActorSetupCmd>(NGRpcService::CreateGRpcRequestProxyId(i),
                                                            TActorSetupCmd(grpcReqProxy, TMailboxType::ReadAsFilled,
@@ -1668,7 +1647,7 @@ void TGRpcServicesInitializer::InitializeServices(NActors::TActorSystemSetup* se
         setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(
                 TActorId(),
                 TActorSetupCmd(
-                    NConsole::CreateJaegerTracingConfigurator(std::move(tracingConfigurator), Config.GetTracingConfig()),
+                    NConsole::CreateJaegerTracingConfigurator(appData->TracingConfigurator, Config.GetTracingConfig()),
                     TMailboxType::ReadAsFilled,
                     appData->UserPoolId)));
     }
@@ -1732,6 +1711,18 @@ void TGRpcServicesInitializer::InitializeServices(NActors::TActorSystemSetup* se
                 desc->EndpointId = config.GetEndpointId();
             }
             endpoints.push_back(std::move(desc));
+        }
+
+        if (Config.GetKafkaProxyConfig().GetEnableKafkaProxy()) {
+            const auto& kakfaConfig = Config.GetKafkaProxyConfig();
+            TIntrusivePtr<NGRpcService::TGrpcEndpointDescription> desc = new NGRpcService::TGrpcEndpointDescription();
+            desc->Address = config.GetPublicHost() ? config.GetPublicHost() : address;
+            desc->Port = kakfaConfig.GetListeningPort();
+            desc->Ssl = kakfaConfig.HasSslCertificate();
+
+            desc->EndpointId = NGRpcService::KafkaEndpointId;
+            endpoints.push_back(std::move(desc));
+
         }
 
         for (auto &sx : config.GetExtEndpoints()) {
@@ -2072,28 +2063,8 @@ void TMemoryControllerInitializer::InitializeServices(
     NActors::TActorSystemSetup* setup,
     const NKikimr::TAppData* appData)
 {
-    NMemory::TResourceBrokerConfig resourceBrokerSelfConfig; // for backward compatibility
-    auto mergeResourceBrokerConfigs = [&](const NKikimrResourceBroker::TResourceBrokerConfig& resourceBrokerConfig) {
-        if (resourceBrokerConfig.HasResourceLimit() && resourceBrokerConfig.GetResourceLimit().HasMemory()) {
-            resourceBrokerSelfConfig.LimitBytes = resourceBrokerConfig.GetResourceLimit().GetMemory();
-        }
-        for (const auto& queue : resourceBrokerConfig.GetQueues()) {
-            if (queue.GetName() == NLocalDb::KqpResourceManagerQueue) {
-                if (queue.HasLimit() && queue.GetLimit().HasMemory()) {
-                    resourceBrokerSelfConfig.QueryExecutionLimitBytes = queue.GetLimit().GetMemory();
-                }
-            }
-        }
-    };
-    if (Config.HasBootstrapConfig() && Config.GetBootstrapConfig().HasResourceBroker()) {
-        mergeResourceBrokerConfigs(Config.GetBootstrapConfig().GetResourceBroker());
-    }
-    if (Config.HasResourceBrokerConfig()) {
-        mergeResourceBrokerConfigs(Config.GetResourceBrokerConfig());
-    }
-
     auto* actor = NMemory::CreateMemoryController(TDuration::Seconds(1), ProcessMemoryInfoProvider,
-        Config.GetMemoryControllerConfig(), resourceBrokerSelfConfig,
+        Config.GetMemoryControllerConfig(), NKikimrConfigHelpers::CreateMemoryControllerResourceBrokerConfig(Config),
         appData->Counters);
     setup->LocalServices.emplace_back(
         NMemory::MakeMemoryControllerId(0),
@@ -2783,9 +2754,15 @@ void TKafkaProxyServiceInitializer::InitializeServices(NActors::TActorSystemSetu
         settings.PrivateKeyFile = Config.GetKafkaProxyConfig().GetKey();
 
         setup->LocalServices.emplace_back(
-            TActorId(),
-            TActorSetupCmd(NKafka::CreateKafkaListener(MakePollerActorId(), settings, Config.GetKafkaProxyConfig()),
+            NKafka::MakeKafkaDiscoveryCacheID(),
+            TActorSetupCmd(CreateDiscoveryCache(NGRpcService::KafkaEndpointId),
                 TMailboxType::HTSwap, appData->UserPoolId)
+        );
+        setup->LocalServices.emplace_back(
+            TActorId(),
+            TActorSetupCmd(NKafka::CreateKafkaListener(MakePollerActorId(), settings, Config.GetKafkaProxyConfig(),
+                                                       NKafka::MakeKafkaDiscoveryCacheID()),
+                           TMailboxType::HTSwap, appData->UserPoolId)
         );
 
         IActor* metricsActor = CreateKafkaMetricsActor(NKafka::TKafkaMetricsSettings{appData->Counters});

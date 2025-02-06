@@ -47,7 +47,11 @@ struct TProducerSessionOptions
     TBackoffStrategy BackoffStrategy = TBackoffStrategy(TExponentialBackoffOptions{});
 
     //! Acknowledgment callback.
-    TAckCallback AcknowledgmentCallback;
+    TAckCallback AckCallback;
+
+    //! If this happens to be a push into a replicated table queue,
+    //! controls if at least one sync replica is required.
+    bool RequireSyncReplica = true;
 };
 
 struct IProducerSession
@@ -67,6 +71,7 @@ struct IProducerSession
     //! Cancel writing of all not flushed rows.
     virtual void Cancel() = 0;
 };
+
 DEFINE_REFCOUNTED_TYPE(IProducerSession)
 
 ////////////////////////////////////////////////////////////////////////////////

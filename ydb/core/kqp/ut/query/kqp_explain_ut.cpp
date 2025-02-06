@@ -1,5 +1,5 @@
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
-#include <ydb/public/sdk/cpp/client/ydb_table/table.h>
+#include <ydb-cpp-sdk/client/table/table.h>
 
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor.h>
 
@@ -167,8 +167,7 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         auto aggregate = FindPlanNodeByKv(read, "Name", "Aggregate");
         UNIT_ASSERT(aggregate.IsDefined());
         UNIT_ASSERT(aggregate.GetMapSafe().at("GroupBy").GetStringSafe() == "item.App");
-        UNIT_ASSERT(aggregate.GetMapSafe().at("Aggregation").GetStringSafe() ==
-            "{_yql_agg_0: MAX(item.Message,state._yql_agg_0),_yql_agg_1: MIN(item.Message,state._yql_agg_1)}");
+        UNIT_ASSERT(aggregate.GetMapSafe().at("Aggregation").GetStringSafe() == "{MAX(item.Message),MIN(item.Message)}");
     }
 
     Y_UNIT_TEST(ComplexJoin) {
@@ -593,6 +592,7 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         NJson::ReadJsonTree(*res.PlanJson, &plan, true);
         UNIT_ASSERT(ValidatePlanNodeIds(plan));
 
+        Cout << plan.GetStringRobust() << Endl;
         auto join = FindPlanNodeByKv(plan, "Node Type", "FullJoin (JoinDict)");
         UNIT_ASSERT(join.IsDefined());
         auto left = FindPlanNodeByKv(join, "Table", "EightShard");
@@ -741,19 +741,19 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         TVector<std::pair<TString, TString>> testData = {
             {
                 "SELECT * FROM `/Root/TwoKeys` WHERE Value > 5 And Value <= 10",
-                "item.Value > 5 And item.Value <= 10"
+                "item.Value > 5 AND item.Value <= 10"
             },
             {
                 "SELECT * FROM `/Root/TwoKeys` WHERE Key2 < 100 Or Value == 5",
-                "item.Key2 < 100 Or item.Value == 5"
+                "item.Key2 < 100 OR item.Value == 5"
             },
             {
                 "SELECT * FROM `/Root/TwoKeys` WHERE Key2 < 100 And Key2 >= 10 And Value != 5",
-                "item.Key2 < 100 And item.Key2 >= 10 And item.Value != 5"
+                "item.Key2 < 100 AND item.Key2 >= 10 AND item.Value != 5"
             },
             {
                 "SELECT * FROM `/Root/TwoKeys` WHERE Key2 < 10 Or Cast(Key2 As Int64) < Value",
-                "item.Key2 < 10 Or item.Key2 < item.Value"
+                "item.Key2 < 10 OR item.Key2 < item.Value"
             }
         };
 
@@ -876,7 +876,7 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
 
         UNIT_ASSERT_C(res.IsSuccess(), res.GetIssues().ToString());
         auto strPlan = res.GetPlan();
-        UNIT_ASSERT(strPlan);
+        UNIT_ASSERT(!strPlan.empty());
 
         Cerr << strPlan << Endl;
 

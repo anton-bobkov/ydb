@@ -10,8 +10,9 @@ namespace NKikimr::NOlap {
 class TPortionInfoConstructor;
 struct TIndexInfo;
 
-class TPortionMetaConstructor {
+class TPortionMetaConstructor: public TPortionMetaBase {
 private:
+    using TBase = TPortionMetaBase;
     std::optional<NArrow::TFirstLastSpecialKeys> FirstAndLastPK;
     std::optional<TString> TierName;
     std::optional<TSnapshot> RecordSnapshotMin;
@@ -27,26 +28,8 @@ private:
 
     std::optional<ui32> DeletionsCount;
 
-    std::vector<TUnifiedBlobId> BlobIds;
-    class TAddressBlobId {
-    private:
-        TChunkAddress Address;
-        YDB_READONLY(TBlobRangeLink16::TLinkId, BlobIdx, 0);
-
-    public:
-        const TChunkAddress& GetAddress() const {
-            return Address;
-        }
-
-        TAddressBlobId(const TChunkAddress& address, const TBlobRangeLink16::TLinkId blobIdx)
-            : Address(address)
-            , BlobIdx(blobIdx) {
-        }
-    };
-    std::vector<TAddressBlobId> BlobIdxs;
-    bool NeedBlobIdxsSort = false;
-
     friend class TPortionInfoConstructor;
+    friend class TPortionAccessorConstructor;
     void FillMetaInfo(const NArrow::TFirstLastSpecialKeys& primaryKeys, const ui32 deletionsCount,
         const std::optional<NArrow::TMinMaxSpecialKeys>& snapshotKeys, const TIndexInfo& indexInfo);
 
@@ -56,41 +39,6 @@ public:
 
     const TBlobRange RestoreBlobRange(const TBlobRangeLink16& linkRange) const {
         return linkRange.RestoreRange(GetBlobId(linkRange.GetBlobIdxVerified()));
-    }
-
-    ui32 GetBlobIdsCount() const {
-        return BlobIds.size();
-    }
-
-    void RegisterBlobIdx(const TChunkAddress& address, const TBlobRangeLink16::TLinkId blobIdx) {
-        if (BlobIdxs.size() && address < BlobIdxs.back().GetAddress()) {
-            NeedBlobIdxsSort = true;
-        }
-        BlobIdxs.emplace_back(address, blobIdx);
-    }
-
-    const TBlobRange RestoreBlobRangeSlow(const TBlobRangeLink16& linkRange, const TChunkAddress& address) const {
-        for (auto&& i : BlobIdxs) {
-            if (i.GetAddress() == address) {
-                return linkRange.RestoreRange(GetBlobId(i.GetBlobIdx()));
-            }
-        }
-        AFL_VERIFY(false);
-        return TBlobRange();
-    }
-
-    void ReorderBlobs() {
-        if (NeedBlobIdxsSort) {
-            auto pred = [](const TAddressBlobId& l, const TAddressBlobId& r) {
-                return l.GetAddress() < r.GetAddress();
-            };
-            std::sort(BlobIdxs.begin(), BlobIdxs.end(), pred);
-        }
-    }
-
-    const TUnifiedBlobId& GetBlobId(const TBlobRangeLink16::TLinkId linkId) const {
-        AFL_VERIFY(linkId < BlobIds.size());
-        return BlobIds[linkId];
     }
 
     TBlobRangeLink16::TLinkId RegisterBlobId(const TUnifiedBlobId& blobId) {

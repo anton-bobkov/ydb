@@ -24,7 +24,7 @@ void TStatsIterator::AppendStats(
     auto& entityStorages = EntityStorageNames[portion.GetMeta().GetTierName()];
     {
         std::vector<const TColumnRecord*> records;
-        for (auto&& r : portionPtr.GetRecords()) {
+        for (auto&& r : portionPtr.GetRecordsVerified()) {
             records.emplace_back(&r);
         }
         if (Reverse) {
@@ -85,7 +85,7 @@ void TStatsIterator::AppendStats(
     }
     {
         std::vector<const TIndexChunk*> indexes;
-        for (auto&& r : portionPtr.GetIndexes()) {
+        for (auto&& r : portionPtr.GetIndexesVerified()) {
             indexes.emplace_back(&r);
         }
         if (Reverse) {
@@ -128,7 +128,7 @@ std::vector<std::pair<TString, NKikimr::NScheme::TTypeInfo>> TReadStatsMetadata:
     return GetColumns(TStatsIterator::StatsSchema, TStatsIterator::StatsSchema.KeyColumns);
 }
 
-std::shared_ptr<NKikimr::NOlap::NReader::NSysView::NAbstract::TReadStatsMetadata> TConstructor::BuildMetadata(
+std::shared_ptr<NAbstract::TReadStatsMetadata> TConstructor::BuildMetadata(
     const NColumnShard::TColumnShard* self, const TReadDescription& read) const {
     auto* index = self->GetIndexOptional();
     return std::make_shared<TReadStatsMetadata>(index ? index->CopyVersionedIndexPtr() : nullptr, self->TabletID(),
@@ -143,7 +143,7 @@ bool TStatsIterator::AppendStats(const std::vector<std::unique_ptr<arrow::ArrayB
         if (it == FetchedAccessors.end()) {
             break;
         }
-        recordsCount += it->second.GetRecords().size() + it->second.GetIndexes().size();
+        recordsCount += it->second.GetRecordsVerified().size() + it->second.GetIndexesVerified().size();
         AppendStats(builders, it->second);
         granule.PopFrontPortion();
         FetchedAccessors.erase(it);
@@ -161,12 +161,12 @@ ui32 TStatsIterator::PredictRecordsCount(const NAbstract::TGranuleMetaView& gran
         if (it == FetchedAccessors.end()) {
             break;
         }
-        recordsCount += it->second.GetRecords().size() + it->second.GetIndexes().size();
+        recordsCount += it->second.GetRecordsVerified().size() + it->second.GetIndexesVerified().size();
         if (recordsCount > 10000) {
             break;
         }
     }
-    AFL_VERIFY(recordsCount);
+    AFL_VERIFY(recordsCount || granule.GetPortions().empty());
     return recordsCount;
 }
 
@@ -177,7 +177,7 @@ TConclusionStatus TStatsIterator::Start() {
     for (auto&& i : IndexGranules) {
         GroupGuards.emplace_back(NGroupedMemoryManager::TScanMemoryLimiterOperator::BuildGroupGuard(ReadMetadata->GetTxId(), 1));
         for (auto&& p : i.GetPortions()) {
-            std::shared_ptr<TDataAccessorsRequest> request = std::make_shared<TDataAccessorsRequest>();
+            std::shared_ptr<TDataAccessorsRequest> request = std::make_shared<TDataAccessorsRequest>("SYS_VIEW::CHUNKS");
             request->AddPortion(p);
             auto allocation = std::make_shared<TFetchingAccessorAllocation>(request, p->PredictMetadataMemorySize(columnsCount), Context);
             request->RegisterSubscriber(allocation);
@@ -189,13 +189,39 @@ TConclusionStatus TStatsIterator::Start() {
     return TConclusionStatus::Success();
 }
 
+bool TStatsIterator::IsReadyForBatch() const {
+    if (!IndexGranules.size()) {
+        AFL_DEBUG(NKikimrServices::TX_COLUMNSHARD_SCAN)("event", "batch_ready_check")("result", false)("reason", "no_granules");
+        return false;
+    }
+    if (!IndexGranules.front().GetPortions().size()) {
+        AFL_DEBUG(NKikimrServices::TX_COLUMNSHARD_SCAN)("event", "batch_ready_check")("result", true)("reason", "no_granule_portions");
+        return true;
+    }
+    if (FetchedAccessors.contains(IndexGranules.front().GetPortions().front()->GetPortionId())) {
+        AFL_DEBUG(NKikimrServices::TX_COLUMNSHARD_SCAN)("event", "batch_ready_check")("result", true)("reason", "portion_fetched");
+        return true;
+    }
+    return false;
+}
+
 TStatsIterator::TFetchingAccessorAllocation::TFetchingAccessorAllocation(
     const std::shared_ptr<TDataAccessorsRequest>& request, const ui64 mem, const std::shared_ptr<NReader::TReadContext>& context)
     : TBase(mem)
     , AccessorsManager(context->GetDataAccessorsManager())
     , Request(request)
     , WaitingCountersGuard(context->GetCounters().GetFetcherAcessorsGuard())
-    , OwnerId(context->GetScanActorId()) {
+    , OwnerId(context->GetScanActorId())
+    , Context(context) {
+}
+
+void TStatsIterator::TFetchingAccessorAllocation::DoOnAllocationImpossible(const TString& errorMessage) {
+    Request = nullptr;
+    Context->AbortWithError("cannot allocate memory for take accessors info: " + errorMessage);
+}
+
+const std::shared_ptr<const TAtomicCounter>& TStatsIterator::TFetchingAccessorAllocation::DoGetAbortionFlag() const {
+    return Context->GetAbortionFlag();
 }
 
 }   // namespace NKikimr::NOlap::NReader::NSysView::NChunks

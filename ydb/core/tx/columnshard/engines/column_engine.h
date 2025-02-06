@@ -9,11 +9,11 @@
 
 #include <ydb/core/tx/columnshard/common/reverse_accessor.h>
 #include <ydb/core/tx/columnshard/counters/common_data.h>
+#include <ydb/core/tx/columnshard/resource_subscriber/container.h>
 #include <ydb/core/tx/columnshard/tx_reader/abstract.h>
 
 namespace NKikimr::NColumnShard {
 class TTiersManager;
-class TTtl;
 }   // namespace NKikimr::NColumnShard
 
 namespace NKikimr::NOlap {
@@ -25,6 +25,7 @@ class TTTLColumnEngineChanges;
 class TCleanupPortionsColumnEngineChanges;
 class TCleanupTablesColumnEngineChanges;
 class TPortionInfo;
+class TDataAccessorsRequest;
 namespace NDataLocks {
 class TManager;
 }
@@ -45,11 +46,11 @@ struct TSelectInfo {
         }
     };
 
-    std::vector<std::shared_ptr<TPortionInfo>> PortionsOrderedPK;
+    std::vector<std::shared_ptr<TPortionInfo>> Portions;
 
     TStats Stats() const;
 
-    void DebugStream(IOutputStream& out);
+    TString DebugString() const;
 };
 
 class TColumnEngineStats {
@@ -73,6 +74,7 @@ public:
         i64 Rows = 0;
         i64 Bytes = 0;
         i64 RawBytes = 0;
+        std::vector<i64> ByChannel;
 
         TString DebugString() const {
             return TStringBuilder() << "portions=" << Portions << ";blobs=" << Blobs << ";rows=" << Rows << ";bytes=" << Bytes
@@ -91,6 +93,10 @@ public:
             result.Rows = kff * Rows;
             result.Bytes = kff * Bytes;
             result.RawBytes = kff * RawBytes;
+            result.ByChannel.reserve(ByChannel.size());
+            for (ui64 channelBytes: ByChannel) {
+                result.ByChannel.push_back(channelBytes * kff);
+            }
             return result;
         }
 
@@ -104,6 +110,12 @@ public:
             Rows = SumVerifiedPositive(Rows, item.Rows);
             Bytes = SumVerifiedPositive(Bytes, item.Bytes);
             RawBytes = SumVerifiedPositive(RawBytes, item.RawBytes);
+            if (ByChannel.size() < item.ByChannel.size()) {
+                ByChannel.resize(item.ByChannel.size());
+            }
+            for (ui32 ch = 0; ch < item.ByChannel.size(); ch++) {
+                ByChannel[ch] = SumVerifiedPositive(ByChannel[ch], item.ByChannel[ch]);
+            }
             return *this;
         }
     };
@@ -238,6 +250,35 @@ public:
     }
 };
 
+class TColumnEngineForLogs;
+class IMetadataAccessorResultProcessor {
+private:
+    virtual void DoApplyResult(NResourceBroker::NSubscribe::TResourceContainer<TDataAccessorsResult>&& result, TColumnEngineForLogs& engine) = 0;
+
+public:
+    virtual ~IMetadataAccessorResultProcessor() = default;
+
+    void ApplyResult(NResourceBroker::NSubscribe::TResourceContainer<TDataAccessorsResult>&& result, TColumnEngineForLogs& engine) {
+        return DoApplyResult(std::move(result), engine);
+    }
+
+    IMetadataAccessorResultProcessor() = default;
+};
+
+class TCSMetadataRequest {
+private:
+    YDB_READONLY_DEF(std::shared_ptr<TDataAccessorsRequest>, Request);
+    YDB_READONLY_DEF(std::shared_ptr<IMetadataAccessorResultProcessor>, Processor);
+
+public:
+    TCSMetadataRequest(const std::shared_ptr<TDataAccessorsRequest>& request, const std::shared_ptr<IMetadataAccessorResultProcessor>& processor)
+        : Request(request)
+        , Processor(processor) {
+        AFL_VERIFY(Request);
+        AFL_VERIFY(Processor);
+    }
+};
+
 class IColumnEngine {
 protected:
     virtual void DoRegisterTable(const ui64 pathId) = 0;
@@ -286,7 +327,9 @@ public:
 
     virtual ~IColumnEngine() = default;
 
+    virtual std::vector<TCSMetadataRequest> CollectMetadataRequests() const = 0;
     virtual const TVersionedIndex& GetVersionedIndex() const = 0;
+    virtual const std::shared_ptr<TVersionedIndex>& GetVersionedIndexReadonlyCopy() = 0;
     virtual std::shared_ptr<TVersionedIndex> CopyVersionedIndexPtr() const = 0;
     virtual const std::shared_ptr<arrow::Schema>& GetReplaceKey() const;
 
@@ -311,9 +354,9 @@ public:
         const std::shared_ptr<NDataLocks::TManager>& dataLocksManager, const ui64 memoryUsageLimit) noexcept = 0;
     virtual bool ApplyChangesOnTxCreate(std::shared_ptr<TColumnEngineChanges> changes, const TSnapshot& snapshot) noexcept = 0;
     virtual bool ApplyChangesOnExecute(IDbWrapper& db, std::shared_ptr<TColumnEngineChanges> changes, const TSnapshot& snapshot) noexcept = 0;
-    virtual void RegisterSchemaVersion(const TSnapshot& snapshot, TIndexInfo&& info) = 0;
-    virtual void RegisterSchemaVersion(const TSnapshot& snapshot, const TSchemaInitializationData& schema) = 0;
-    virtual void RegisterOldSchemaVersion(const TSnapshot& snapshot, const TSchemaInitializationData& schema) = 0;
+    virtual void RegisterSchemaVersion(const TSnapshot& snapshot, const ui64 presetId, TIndexInfo&& info) = 0;
+    virtual void RegisterSchemaVersion(const TSnapshot& snapshot, const ui64 presetId, const TSchemaInitializationData& schema) = 0;
+    virtual void RegisterOldSchemaVersion(const TSnapshot& snapshot, const ui64 presetId, const TSchemaInitializationData& schema) = 0;
 
     virtual const TMap<ui64, std::shared_ptr<TColumnEngineStats>>& GetStats() const = 0;
     virtual const TColumnEngineStats& GetTotalStats() = 0;
@@ -323,8 +366,8 @@ public:
     virtual TSnapshot LastUpdate() const {
         return TSnapshot::Zero();
     }
-    virtual void OnTieringModified(
-        const std::shared_ptr<NColumnShard::TTiersManager>& manager, const NColumnShard::TTtl& ttl, const std::optional<ui64> pathId) = 0;
+    virtual void OnTieringModified(const std::optional<NOlap::TTiering>& ttl, const ui64 pathId) = 0;
+    virtual void OnTieringModified(const THashMap<ui64, NOlap::TTiering>& ttl) = 0;
 };
 
 }   // namespace NKikimr::NOlap

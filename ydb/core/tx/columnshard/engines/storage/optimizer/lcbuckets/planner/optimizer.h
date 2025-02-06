@@ -4,12 +4,13 @@
 
 namespace NKikimr::NOlap::NStorageOptimizer::NLCBuckets {
 
+class TLevelConstructorContainer;
+
 class TOptimizerPlanner: public IOptimizerPlanner {
 private:
     using TBase = IOptimizerPlanner;
     std::shared_ptr<TCounters> Counters;
     std::shared_ptr<TSimplePortionsGroupInfo> PortionsInfo = std::make_shared<TSimplePortionsGroupInfo>();
-    TInstant LastActualization = TInstant::Now();
 
     std::vector<std::shared_ptr<IPortionsLevel>> Levels;
     class TReverseSorting {
@@ -101,12 +102,11 @@ protected:
         std::shared_ptr<TGranuleMeta> granule, const std::shared_ptr<NDataLocks::TManager>& locksManager) const override;
 
     virtual void DoActualize(const TInstant currentInstant) override {
-        if (currentInstant - LastActualization > TDuration::Seconds(180)) {
-            LastActualization = currentInstant;
-        } else {
-            return;
+        for (const auto& level : Levels) {
+            if (currentInstant >= level->GetWeightExpirationInstant()) {
+                return RefreshWeights();
+            }
         }
-        RefreshWeights();
     }
 
     virtual TOptimizationPriority DoGetUsefulMetric() const override {
@@ -144,8 +144,8 @@ public:
         return result;
     }
 
-    TOptimizerPlanner(
-        const ui64 pathId, const std::shared_ptr<IStoragesManager>& storagesManager, const std::shared_ptr<arrow::Schema>& primaryKeysSchema);
+    TOptimizerPlanner(const ui64 pathId, const std::shared_ptr<IStoragesManager>& storagesManager,
+        const std::shared_ptr<arrow::Schema>& primaryKeysSchema, const std::vector<TLevelConstructorContainer>& levelConstructors);
 };
 
 }   // namespace NKikimr::NOlap::NStorageOptimizer::NLCBuckets

@@ -1,5 +1,8 @@
 #pragma once
 #include "abstract_scheme.h"
+
+#include <ydb/core/tx/columnshard/engines/scheme/abstract/schema_version.h>
+#include <ydb/core/tx/columnshard/engines/scheme/common/cache.h>
 #include <ydb/core/tx/sharding/sharding.h>
 
 namespace NKikimr::NOlap {
@@ -33,6 +36,11 @@ class TVersionedIndex {
     ISnapshotSchema::TPtr SchemeForActualization;
 
 public:
+    bool IsEqualTo(const TVersionedIndex& vIndex) {
+        return LastSchemaVersion == vIndex.LastSchemaVersion && SnapshotByVersion.size() == vIndex.SnapshotByVersion.size() &&
+               ShardingInfo.size() == vIndex.ShardingInfo.size() && SchemeVersionForActualization == vIndex.SchemeVersionForActualization;
+    }
+
     ISnapshotSchema::TPtr GetLastCriticalSchema() const {
         return SchemeForActualization;
     }
@@ -73,7 +81,7 @@ public:
         return sb;
     }
 
-    ISnapshotSchema::TPtr GetSchema(const ui64 version) const {
+    ISnapshotSchema::TPtr GetSchemaOptional(const ui64 version) const {
         auto it = SnapshotByVersion.find(version);
         return it == SnapshotByVersion.end() ? nullptr : it->second;
     }
@@ -84,7 +92,7 @@ public:
         return it->second;
     }
 
-    ISnapshotSchema::TPtr GetSchema(const TSnapshot& version) const {
+    ISnapshotSchema::TPtr GetSchemaVerified(const TSnapshot& version) const {
         for (auto it = Snapshots.rbegin(); it != Snapshots.rend(); ++it) {
             if (it->first <= version) {
                 return it->second;
@@ -95,14 +103,14 @@ public:
     }
 
     ISnapshotSchema::TPtr GetLastSchemaBeforeOrEqualSnapshotOptional(const ui64 version) const {
-        ISnapshotSchema::TPtr res = nullptr;
-        for (auto it = SnapshotByVersion.rbegin(); it != SnapshotByVersion.rend(); ++it) {
-            if (it->first <= version) {
-                res = it->second;
-                break;
-            }
+        if (SnapshotByVersion.empty()) {
+            return nullptr;
         }
-        return res;
+        auto upperBound = SnapshotByVersion.upper_bound(version);
+        if (upperBound == SnapshotByVersion.begin()) {
+            return nullptr;
+        }
+        return std::prev(upperBound)->second;
     }
 
     ISnapshotSchema::TPtr GetLastSchema() const {
@@ -118,7 +126,7 @@ public:
         return PrimaryKey;
     }
 
-    const TIndexInfo* AddIndex(const TSnapshot& snapshot, TIndexInfo&& indexInfo);
+    const TIndexInfo* AddIndex(const TSnapshot& snapshot, TObjectCache<TSchemaVersionId, TIndexInfo>::TEntryGuard&& indexInfo);
 
     bool LoadShardingInfo(IDbWrapper& db);
 };

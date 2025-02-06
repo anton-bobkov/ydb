@@ -11,7 +11,7 @@
 #include <ydb/core/sys_view/common/events.h>
 #include <ydb/core/tx/tx_proxy/mon.h>
 
-#include <ydb/library/yql/minikql/aligned_page_pool.h>
+#include <yql/essentials/minikql/aligned_page_pool.h>
 #include <ydb/library/yql/dq/actors/spilling/spilling_counters.h>
 #include <ydb/public/api/protos/ydb_status_codes.pb.h>
 
@@ -428,6 +428,10 @@ public:
     NMonitoring::THistogramPtr WriteActorWritesOperationsHistogram;
     NMonitoring::THistogramPtr WriteActorWritesLatencyHistogram;
 
+    NMonitoring::THistogramPtr BufferActorPrepareLatencyHistogram;
+    NMonitoring::THistogramPtr BufferActorCommitLatencyHistogram;
+    NMonitoring::THistogramPtr BufferActorFlushLatencyHistogram;
+
     NMonitoring::THistogramPtr ForwardActorWritesSizeHistogram;
     NMonitoring::THistogramPtr ForwardActorWritesLatencyHistogram;
 
@@ -452,6 +456,10 @@ public:
     NMonitoring::THistogramPtr ScanTxTotalTimeHistogram;
 
     NMonitoring::TDynamicCounters::TCounterPtr RowsDuplicationsFound;
+
+    // Locality metrics for request
+    NMonitoring::TDynamicCounters::TCounterPtr TotalSingleNodeReqCount;
+    NMonitoring::TDynamicCounters::TCounterPtr NonLocalSingleNodeReqCount;
 
     TAlignedPagePoolCounters AllocCounters;
 

@@ -3,6 +3,7 @@ LIBRARY()
 SRCS(
     actor_persqueue_client_iface.h
     blob.cpp
+    common_app.cpp
     cluster_tracker.cpp
     event_helpers.cpp
     fetch_request_actor.cpp
@@ -10,6 +11,7 @@ SRCS(
     heartbeat.cpp
     key.cpp
     metering_sink.cpp
+    list_all_topics_actor.cpp
     mirrorer.cpp
     mirrorer.h
     ownerinfo.cpp
@@ -25,12 +27,14 @@ SRCS(
     percentile_counter.cpp
     pq.cpp
     pq_database.cpp
+    pq_impl_app.cpp
     pq_impl.cpp
     pq_l2_cache.cpp
     pq_rl_helpers.cpp
     quota_tracker.cpp
     read_balancer__balancing_app.cpp
     read_balancer__balancing.cpp
+    read_balancer_app.cpp
     read_balancer.cpp
     account_read_quoter.cpp
     read_quoter.cpp
@@ -71,7 +75,7 @@ PEERDIR(
     ydb/library/persqueue/topic_parser
     ydb/library/protobuf_printer
     ydb/public/lib/base
-    ydb/public/sdk/cpp/client/ydb_persqueue_public
+    ydb/public/sdk/cpp/src/client/persqueue_public
 )
 
 END()

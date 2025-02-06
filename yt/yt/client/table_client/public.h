@@ -4,15 +4,18 @@
 
 #include <yt/yt/client/cypress_client/public.h>
 
+#include <yt/yt/client/signature/public.h>
+
 #include <yt/yt/client/tablet_client/public.h>
 
 #include <yt/yt/client/transaction_client/public.h>
 
-#include <yt/yt/core/misc/range.h>
 #include <yt/yt/core/misc/protobuf_helpers.h>
 
 #include <library/cpp/yt/misc/enum.h>
 #include <library/cpp/yt/misc/strong_typedef.h>
+
+#include <library/cpp/yt/memory/range.h>
 
 #include <util/generic/size_literals.h>
 
@@ -151,7 +154,13 @@ DEFINE_ENUM(ETableSchemaMode,
     ((Strong)    (1))
 );
 
-DEFINE_ENUM(EOptimizeFor,
+// TODO(cherepashka): remove after corresponding compat in 25.1 will be removed.
+DEFINE_ENUM(ECompatOptimizeFor,
+    ((Lookup)  (0))
+    ((Scan)    (1))
+);
+
+DEFINE_ENUM_WITH_UNDERLYING_TYPE(EOptimizeFor, int,
     ((Lookup)  (0))
     ((Scan)    (1))
 );
@@ -182,7 +191,7 @@ YT_DEFINE_ERROR_ENUM(
     ((DuplicateColumnInSchema)           (322))
     ((MissingRequiredColumnInSchema)     (323))
     ((IncomparableComplexValues)         (324))
-    ((KeyCannotBeNan)                    (325))
+    ((KeyCannotBeNaN)                    (325))
     ((StringLikeValueLengthLimitExceeded)(326))
     ((NameTableUpdateFailed)             (327))
     ((InvalidTableChunkFormat)           (328))
@@ -337,6 +346,7 @@ DECLARE_REFCOUNTED_CLASS(TRowBuffer)
 DECLARE_REFCOUNTED_STRUCT(ISchemalessUnversionedReader)
 DECLARE_REFCOUNTED_STRUCT(ISchemafulUnversionedReader)
 DECLARE_REFCOUNTED_STRUCT(IUnversionedWriter)
+DECLARE_REFCOUNTED_STRUCT(IUnversionedTableFragmentWriter)
 DECLARE_REFCOUNTED_STRUCT(IUnversionedRowsetWriter)
 
 using TSchemalessWriterFactory = std::function<IUnversionedRowsetWriterPtr(
@@ -445,6 +455,12 @@ using TUUComparerSignature = int(const TUnversionedValue*, const TUnversionedVal
 
 struct TVersionedReadOptions;
 struct TVersionedWriteOptions;
+
+////////////////////////////////////////////////////////////////////////////////
+
+YT_DEFINE_STRONG_TYPEDEF(TSignedDistributedWriteSessionPtr, NSignature::TSignaturePtr);
+YT_DEFINE_STRONG_TYPEDEF(TSignedWriteFragmentCookiePtr, NSignature::TSignaturePtr);
+YT_DEFINE_STRONG_TYPEDEF(TSignedWriteFragmentResultPtr, NSignature::TSignaturePtr);
 
 ////////////////////////////////////////////////////////////////////////////////
 

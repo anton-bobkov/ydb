@@ -33,7 +33,6 @@
 
 #include <yt/yt/library/tvm/tvm_base.h>
 
-
 namespace NYT::NDriver {
 
 using namespace NYTree;
@@ -51,6 +50,7 @@ using namespace NHiveClient;
 using namespace NTabletClient;
 using namespace NApi;
 using namespace NNodeTrackerClient;
+using namespace NSignature;
 using namespace NTracing;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -112,7 +112,11 @@ class TDriver
     : public IDriver
 {
 public:
-    TDriver(TDriverConfigPtr config, IConnectionPtr connection)
+    TDriver(
+        TDriverConfigPtr config,
+        IConnectionPtr connection,
+        TSignatureGeneratorBasePtr signatureGenerator,
+        TSignatureValidatorBasePtr signatureValidator)
         : Config_(std::move(config))
         , Connection_(std::move(connection))
         , ClientCache_(New<TClientCache>(Config_->ClientCache, Connection_))
@@ -122,6 +126,8 @@ public:
         , ProxyDiscoveryCache_(CreateProxyDiscoveryCache(
             Config_->ProxyDiscoveryCache,
             RootClient_))
+        , SignatureGenerator_(std::move(signatureGenerator))
+        , SignatureValidator_(std::move(signatureValidator))
         , StickyTransactionPool_(CreateStickyTransactionPool(Logger()))
     {
         // Register all commands.
@@ -224,12 +230,14 @@ public:
         REGISTER    (TRemountTableCommand,                 "remount_table",                   Null,       Structured, true,  false, ApiVersion4);
         REGISTER    (TFreezeTableCommand,                  "freeze_table",                    Null,       Structured, true,  false, ApiVersion4);
         REGISTER    (TUnfreezeTableCommand,                "unfreeze_table",                  Null,       Structured, true,  false, ApiVersion4);
+        REGISTER    (TCancelTabletTransitionCommand,       "cancel_tablet_transition",        Null,       Structured, true,  false, ApiVersion4);
         REGISTER    (TReshardTableCommand,                 "reshard_table",                   Null,       Structured, true,  false, ApiVersion4);
         REGISTER    (TAlterTableCommand,                   "alter_table",                     Null,       Structured, true,  false, ApiVersion4);
 
         REGISTER    (TGetTablePivotKeysCommand,            "get_table_pivot_keys",            Null,       Structured, false, false, ApiVersion4);
         REGISTER    (TGetTabletInfosCommand,               "get_tablet_infos",                Null,       Structured, true,  false, ApiVersion4);
         REGISTER    (TGetTabletErrorsCommand,              "get_tablet_errors",               Null,       Structured, true,  false, ApiVersion4);
+        REGISTER    (TGetTableMountInfoCommand,             "get_table_mount_info",           Null,       Structured, false, false, ApiVersion4);
 
         REGISTER    (TCreateTableBackupCommand,            "create_table_backup",             Null,       Null,       true,  false, ApiVersion3);
         REGISTER    (TRestoreTableBackupCommand,           "restore_table_backup",            Null,       Null,       true,  false, ApiVersion3);
@@ -258,6 +266,7 @@ public:
         REGISTER    (TResumeOperationCommand,              "resume_op",                       Null,       Null,       true,  false, ApiVersion3);
         REGISTER    (TCompleteOperationCommand,            "complete_op",                     Null,       Null,       true,  false, ApiVersion3);
         REGISTER    (TUpdateOperationParametersCommand,    "update_op_parameters",            Null,       Null,       true,  false, ApiVersion3);
+        REGISTER    (TPatchOperationSpecCommand,           "patch_op_spec",                   Null,       Null,       true,  false, ApiVersion3);
 
         REGISTER    (TStartOperationCommand,               "start_operation",                 Null,       Structured, true,  false, ApiVersion4);
         REGISTER    (TAbortOperationCommand,               "abort_operation",                 Null,       Structured, true,  false, ApiVersion4);
@@ -265,6 +274,7 @@ public:
         REGISTER    (TResumeOperationCommand,              "resume_operation",                Null,       Structured, true,  false, ApiVersion4);
         REGISTER    (TCompleteOperationCommand,            "complete_operation",              Null,       Structured, true,  false, ApiVersion4);
         REGISTER    (TUpdateOperationParametersCommand,    "update_operation_parameters",     Null,       Structured, true,  false, ApiVersion4);
+        REGISTER    (TPatchOperationSpecCommand,           "patch_operation_spec",            Null,       Structured, true,  false, ApiVersion4);
 
         REGISTER_ALL(TParseYPathCommand,                   "parse_ypath",                     Null,       Structured, false, false);
 
@@ -356,7 +366,7 @@ public:
         REGISTER    (TAdvanceQueueConsumerCommand,         "advance_queue_consumer",          Null,       Structured, true,  false, ApiVersion4);
         REGISTER    (TCreateQueueProducerSessionCommand,   "create_queue_producer_session",   Null,       Structured, true,  false, ApiVersion4);
         REGISTER    (TRemoveQueueProducerSessionCommand,   "remove_queue_producer_session",   Null,       Structured, true,  false, ApiVersion4);
-        REGISTER    (TPushQueueProducerCommand,            "push_queue_producer",             Null,       Structured, true,  false, ApiVersion4);
+        REGISTER    (TPushQueueProducerCommand,            "push_queue_producer",             Tabular,    Structured, true,  false, ApiVersion4);
 
         REGISTER    (TStartQueryCommand,                   "start_query",                     Null,       Structured, true,  false, ApiVersion4);
         REGISTER    (TAbortQueryCommand,                   "abort_query",                     Null,       Structured, true,  false, ApiVersion4);
@@ -383,7 +393,6 @@ public:
         REGISTER    (TGetFlowViewCommand,                  "get_flow_view",                   Null,       Structured, false, false, ApiVersion4);
 
         REGISTER    (TStartShuffleCommand,                 "start_shuffle",                   Null,       Structured, true,  false, ApiVersion4);
-        REGISTER    (TFinishShuffleCommand,                "finish_shuffle",                  Null,       Structured, true,  false, ApiVersion4);
         REGISTER    (TReadShuffleDataCommand,              "read_shuffle_data",               Null,       Tabular,    false,  true, ApiVersion4);
         REGISTER    (TWriteShuffleDataCommand,             "write_shuffle_data",              Tabular,    Structured, false,  true, ApiVersion4);
 
@@ -397,9 +406,12 @@ public:
             REGISTER_ALL(TRevokeLeaseCommand,              "revoke_lease",                    Null,       Structured, true,  false);
             REGISTER_ALL(TReferenceLeaseCommand,           "reference_lease",                 Null,       Structured, true,  false);
             REGISTER_ALL(TUnreferenceLeaseCommand,         "unreference_lease",               Null,       Structured, true,  false);
+
+            // TODO(arkady-e1ppa): flags past command name might be complete rubbish -- think them through later.
             REGISTER_ALL(TStartDistributedWriteSessionCommand,    "start_distributed_write_session",      Null,    Structured, true, false);
             REGISTER_ALL(TFinishDistributedWriteSessionCommand,   "finish_distributed_write_session",     Null,    Null,       true, false);
             REGISTER_ALL(TWriteTableFragmentCommand,               "distributed_write_table_partition",    Tabular, Structured, true, true );
+            REGISTER_ALL(TForsakeChaosCoordinator,         "forsake_chaos_coordinator",       Null,       Null,       true,  true);
         }
 
 #undef REGISTER
@@ -432,6 +444,7 @@ public:
             identity.User);
 
         auto options = TClientOptions::FromAuthenticationIdentity(identity);
+        options.RequirePasswordInAuthenticationCommands = Config_->RequirePasswordInAuthenticationCommands;
         options.Token = request.UserToken;
         options.ServiceTicketAuth = request.ServiceTicket
             ? std::make_optional(New<NAuth::TServiceTicketFixedAuth>(*request.ServiceTicket))
@@ -489,6 +502,16 @@ public:
         return Connection_;
     }
 
+    TSignatureGeneratorBasePtr GetSignatureGenerator() override
+    {
+        return SignatureGenerator_;
+    }
+
+    TSignatureValidatorBasePtr GetSignatureValidator() override
+    {
+        return SignatureValidator_;
+    }
+
     void Terminate() override
     {
         // TODO(ignat): find and eliminate reference loop.
@@ -512,6 +535,8 @@ private:
     TClientCachePtr ClientCache_;
     const IClientPtr RootClient_;
     IProxyDiscoveryCachePtr ProxyDiscoveryCache_;
+    TSignatureGeneratorBasePtr SignatureGenerator_;
+    TSignatureValidatorBasePtr SignatureValidator_;
 
     class TCommandContext;
     using TCommandContextPtr = TIntrusivePtr<TCommandContext>;
@@ -704,14 +729,20 @@ private:
 
 IDriverPtr CreateDriver(
     IConnectionPtr connection,
-    TDriverConfigPtr config)
+    TDriverConfigPtr config,
+    TSignatureGeneratorBasePtr signatureGenerator,
+    TSignatureValidatorBasePtr signatureValidator)
 {
     YT_VERIFY(connection);
     YT_VERIFY(config);
+    YT_VERIFY(signatureGenerator);
+    YT_VERIFY(signatureValidator);
 
     return New<TDriver>(
         std::move(config),
-        std::move(connection));
+        std::move(connection),
+        std::move(signatureGenerator),
+        std::move(signatureValidator));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -498,6 +498,7 @@ namespace NFlatExecutorSetup {
         virtual void SnapshotComplete(TIntrusivePtr<TTableSnapshotContext> snapContext, const TActorContext &ctx); // would be FAIL in default implementation
         virtual void CompletedLoansChanged(const TActorContext &ctx); // would be no-op in default implementation
         virtual void CompactionComplete(ui32 tableId, const TActorContext &ctx); // would be no-op in default implementation
+        virtual void DataCleanupComplete(const TActorContext& ctx);
 
         virtual void ScanComplete(NTable::EAbort status, TAutoPtr<IDestructable> prod, ui64 cookie, const TActorContext &ctx);
 
@@ -585,6 +586,7 @@ namespace NFlatExecutorSetup {
 
         // edge and ts of last full compaction
         virtual TFinishedCompactionInfo GetFinishedCompactionInfo(ui32 tableId) const = 0;
+        virtual bool HasSchemaChanges(ui32 table) const = 0;
 
         // Forces full compaction of the specified table in the near future
         // Returns 0 if can't compact, otherwise compaction ID
@@ -629,6 +631,8 @@ namespace NFlatExecutorSetup {
         virtual const NTable::TScheme& Scheme() const noexcept = 0;
 
         virtual void SetPreloadTablesData(THashSet<ui32> tables) = 0;
+
+        virtual void CleanupData() = 0;
 
         ui32 Generation() const { return Generation0; }
         ui32 Step() const { return Step0; }

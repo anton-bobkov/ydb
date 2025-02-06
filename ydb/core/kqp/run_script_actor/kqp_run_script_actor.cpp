@@ -44,11 +44,8 @@ struct TProducerState {
     ui64 ChannelId = 0;
 
     void SendAck(const NActors::TActorIdentity& actor) const {
-        auto resp = MakeHolder<NKqp::TEvKqpExecuter::TEvStreamDataAck>();
-        resp->Record.SetSeqNo(*LastSeqNo);
+        auto resp = MakeHolder<NKqp::TEvKqpExecuter::TEvStreamDataAck>(*LastSeqNo, ChannelId);
         resp->Record.SetFreeSpace(AckedFreeSpaceBytes);
-        resp->Record.SetChannelId(ChannelId);
-
         actor.Send(ActorId, resp.Release());
     }
 
@@ -689,7 +686,7 @@ private:
     // Result
     std::vector<TResultSetInfo> ResultSetInfos;
     TMap<ui64, TProducerState> StreamChannels;
-    TMaybe<TInstant> ExpireAt;
+    std::optional<TInstant> ExpireAt;
     NJson::TJsonValue ResultSetMetas;
     ui32 SaveResultInflight = 0;
     ui64 SaveResultInflightBytes = 0;

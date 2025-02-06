@@ -278,7 +278,10 @@ public:
                 if (domainRowset.HaveValue<Schema::SubDomain::ServerlessComputeResourcesMode>()) {
                     domain.ServerlessComputeResourcesMode = domainRowset.GetValue<Schema::SubDomain::ServerlessComputeResourcesMode>();
                 }
-                
+                if (domainRowset.HaveValue<Schema::SubDomain::ScaleRecommenderPolicies>()) {
+                    domain.SetScaleRecommenderPolicies(domainRowset.GetValue<Schema::SubDomain::ScaleRecommenderPolicies>());
+                }
+
                 if (!domainRowset.Next())
                     return false;
             }
@@ -329,6 +332,7 @@ public:
                         node.LocationAcquired = true;
                     }
                 }
+                node.DrainSeqNo = nodeRowset.GetValueOrDefault<Schema::Node::DrainSeqNo>();
                 if (!node.ServicedDomains) {
                     node.ServicedDomains = { Self->RootDomainKey };
                 }
@@ -671,7 +675,7 @@ public:
                             --cnt;
                             allowedDc = {dc};
                             Self->DataCenters[dc].Followers[{tabletId, groupId}].push_back(followerIt);
-                            db.Table<Schema::TabletFollowerTablet>().Key(tabletId, followerIt->Id).Update<Schema::TabletFollowerTablet::DataCenter>(dc);
+                            Self->PendingFollowerUpdates.Update({tabletId, followerIt->Id}, dc);
                             ok = true;
                         }
                     }
@@ -689,7 +693,7 @@ public:
                     }
                     follower->NodeFilter.AllowedDataCenters = {dcIt->first};
                     Self->DataCenters[dcIt->first].Followers[{tabletId, groupId}].push_back(follower);
-                    db.Table<Schema::TabletFollowerTablet>().Key(follower->GetFullTabletId()).Update<Schema::TabletFollowerTablet::DataCenter>(dcIt->first);
+                    Self->PendingFollowerUpdates.Update(follower->GetFullTabletId(), dcIt->first);
                     --dcIt->second;
                 }
             }
@@ -856,8 +860,13 @@ public:
         Self->MigrationState = NKikimrHive::EMigrationState::MIGRATION_READY;
         ctx.Send(Self->SelfId(), new TEvPrivate::TEvBootTablets());
 
+        if (!Self->PendingFollowerUpdates.Empty()) {
+            ctx.Send(Self->SelfId(), new TEvPrivate::TEvUpdateFollowers);
+            Self->ProcessFollowerUpdatesScheduled = true;
+        }
+
         for (auto it = Self->Nodes.begin(); it != Self->Nodes.end(); ++it) {
-            Self->ScheduleUnlockTabletExecution(it->second);
+            Self->ScheduleUnlockTabletExecution(it->second, NKikimrHive::LOCK_LOST_REASON_HIVE_RESTART);
         }
     }
 };

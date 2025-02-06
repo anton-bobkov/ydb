@@ -196,9 +196,10 @@ struct Schema : NIceDb::Schema {
         struct Location : Column<9, NScheme::NTypeIds::String> { using Type = NActorsInterconnect::TNodeLocation; };
         struct Name : Column<10, NScheme::NTypeIds::String> {};
         struct BecomeUpOnRestart : Column<11, NScheme::NTypeIds::Bool> {};
+        struct DrainSeqNo : Column<12, NScheme::NTypeIds::Uint64> { static constexpr bool Default = 0; };
 
         using TKey = TableKey<ID>;
-        using TColumns = TableColumns<ID, Local, Down, Freeze, ServicedDomains, Statistics, Drain, DrainInitiators, Location, Name, BecomeUpOnRestart>;
+        using TColumns = TableColumns<ID, Local, Down, Freeze, ServicedDomains, Statistics, Drain, DrainInitiators, Location, Name, BecomeUpOnRestart, DrainSeqNo>;
     };
 
     struct TabletCategory : Table<6> {
@@ -272,9 +273,11 @@ struct Schema : NIceDb::Schema {
         struct Primary : Column<4, NScheme::NTypeIds::Bool> {};
         struct HiveId : Column<5, NScheme::NTypeIds::Uint64> {};
         struct ServerlessComputeResourcesMode : Column<6, NScheme::NTypeIds::Uint32> { using Type = NKikimrSubDomains::EServerlessComputeResourcesMode; };
+        struct ScaleRecommenderPolicies : Column<7, NScheme::NTypeIds::String> { using Type = NKikimrHive::TScaleRecommenderPolicies; };
 
         using TKey = TableKey<SchemeshardId, PathId>;
-        using TColumns = TableColumns<SchemeshardId, PathId, Path, Primary, HiveId, ServerlessComputeResourcesMode>;
+        using TColumns = TableColumns<SchemeshardId, PathId, Path, Primary, HiveId, ServerlessComputeResourcesMode,
+            ScaleRecommenderPolicies>;
     };
 
     struct BlockedOwner : Table<18> {

@@ -1,6 +1,6 @@
 #pragma once
 #include "base_with_blobs.h"
-#include "constructor.h"
+#include "constructor_accessor.h"
 #include "data_accessor.h"
 
 #include <ydb/core/tx/columnshard/blobs_action/abstract/storages_manager.h>
@@ -72,11 +72,12 @@ public:
     };
 
 private:
-    std::optional<TPortionInfoConstructor> PortionConstructor;
+    std::optional<TPortionAccessorConstructor> PortionConstructor;
     YDB_READONLY_DEF(std::vector<TBlobInfo>, Blobs);
 
-    explicit TWritePortionInfoWithBlobsConstructor(TPortionInfoConstructor&& portionConstructor)
+    explicit TWritePortionInfoWithBlobsConstructor(TPortionAccessorConstructor&& portionConstructor)
         : PortionConstructor(std::move(portionConstructor)) {
+        AFL_VERIFY(!PortionConstructor->HaveBlobsData());
     }
 
     TBlobInfo::TBuilder StartBlob(const std::shared_ptr<IBlobsStorageOperator>& bOperator) {
@@ -93,7 +94,7 @@ public:
         const TSnapshot& snapshot, const std::shared_ptr<IStoragesManager>& operators);
 
     static TWritePortionInfoWithBlobsConstructor BuildByBlobs(std::vector<TSplittedBlob>&& chunks,
-        const THashMap<ui32, std::shared_ptr<IPortionDataChunk>>& inplaceChunks, TPortionInfoConstructor&& constructor,
+        const THashMap<ui32, std::shared_ptr<IPortionDataChunk>>& inplaceChunks, TPortionAccessorConstructor&& constructor,
         const std::shared_ptr<IStoragesManager>& operators);
 
     std::vector<TBlobInfo>& GetBlobs() {
@@ -104,7 +105,7 @@ public:
         return TStringBuilder() << "blobs_count=" << Blobs.size() << ";";
     }
 
-    TPortionInfoConstructor& GetPortionConstructor() {
+    TPortionAccessorConstructor& GetPortionConstructor() {
         AFL_VERIFY(!!PortionConstructor);
         return *PortionConstructor;
     }
@@ -144,11 +145,39 @@ public:
     };
 
 private:
-    std::optional<TPortionInfoConstructor> PortionConstructor;
+    std::optional<TPortionAccessorConstructor> PortionConstructor;
     std::optional<TPortionDataAccessor> PortionResult;
     YDB_READONLY_DEF(std::vector<TBlobInfo>, Blobs);
 
+    TString GetBlobByAddressVerified(const ui32 entityId, const ui32 chunkIdx) const {
+        for (auto&& i : Blobs) {
+            for (auto&& b: i.GetChunks()) {
+                if (b.GetEntityId() == entityId && b.GetChunkIdx() == chunkIdx) {
+                    auto* recordInfo = GetPortionResult().GetRecordPointer(TChunkAddress(entityId, chunkIdx));
+                    AFL_VERIFY(recordInfo);
+                    return recordInfo->GetBlobRange().GetBlobData(i.GetResultBlob());
+                }
+            }
+        }
+        AFL_VERIFY(false);
+        return "";
+    }
+
 public:
+    TConclusion<std::shared_ptr<NArrow::TGeneralContainer>> RestoreBatch(
+        const ISnapshotSchema& data, const ISnapshotSchema& resultSchema, const std::set<ui32>& seqColumns, const bool restoreAbsent) const {
+        THashMap<TChunkAddress, TString> blobs;
+        NActors::TLogContextGuard gLogging = NActors::TLogContextBuilder::Build(NKikimrServices::TX_COLUMNSHARD)(
+            "portion_id", GetPortionResult().GetPortionInfo().GetPortionId());
+        for (auto&& i : GetPortionResult().GetRecordsVerified()) {
+            blobs[i.GetAddress()] = GetBlobByAddressVerified(i.ColumnId, i.Chunk);
+            Y_ABORT_UNLESS(blobs[i.GetAddress()].size() == i.BlobRange.Size);
+        }
+        return GetPortionResult()
+            .PrepareForAssemble(data, resultSchema, blobs, {}, restoreAbsent)
+            .AssembleToGeneralContainer(seqColumns);
+    }
+
     std::vector<TBlobInfo>& MutableBlobs() {
         return Blobs;
     }
@@ -166,6 +195,14 @@ public:
         return TStringBuilder() << "blobs_count=" << Blobs.size() << ";";
     }
 
+    void RegisterFakeBlobIds() {
+        ui32 idx = 0;
+        for (auto&& i : Blobs) {
+            i.RegisterBlobId(*this, TUnifiedBlobId(1, 1, 1, ++idx, 1, 1, i.GetSize()));
+        }
+
+    }
+
     void FinalizePortionConstructor() {
         AFL_VERIFY(!!PortionConstructor);
         AFL_VERIFY(!PortionResult);
@@ -179,15 +216,15 @@ public:
         return *PortionResult;
     }
 
-    TPortionInfoConstructor& GetPortionConstructor() {
+    TPortionAccessorConstructor& GetPortionConstructor() {
         AFL_VERIFY(!!PortionConstructor);
         AFL_VERIFY(!PortionResult);
         return *PortionConstructor;
     }
 
-    std::shared_ptr<TPortionInfoConstructor> DetachPortionConstructor() {
+    std::shared_ptr<TPortionAccessorConstructor> DetachPortionConstructor() {
         AFL_VERIFY(PortionConstructor);
-        return std::make_shared<TPortionInfoConstructor>(std::move(*PortionConstructor));
+        return std::make_shared<TPortionAccessorConstructor>(std::move(*PortionConstructor));
     }
 };
 

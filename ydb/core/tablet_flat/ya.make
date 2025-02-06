@@ -26,6 +26,7 @@ SRCS(
     flat_executor_compaction_logic.h
     flat_executor_counters.cpp
     flat_executor_counters.h
+    flat_executor_data_cleanup_logic.cpp
     flat_executor_db_mon.cpp
     flat_executor_gclogic.cpp
     flat_executor_gclogic.h
@@ -111,8 +112,8 @@ PEERDIR(
     ydb/core/tablet
     ydb/core/tablet_flat/protos
     ydb/core/util
-    ydb/library/binary_json
-    ydb/library/dynumber
+    yql/essentials/types/binary_json
+    yql/essentials/types/dynumber
     ydb/library/mkql_proto/protos
 )
 
